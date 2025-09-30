@@ -319,3 +319,105 @@ void format_to_str(char* out, const char* fmt, va_list args) {
 
 
 # Part 2: Dynamic Memory Allocation
+## Modify printf()
+**1. Goal: hold longer string**
+- The original `printf()` only allocates 512 bytes for output
+- When length of output string is unknown or longer than 512 bytes, we need to allocate larger memory flexibly
+```C
+int printf_da(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    // Print output string that is longer than 512 bytes
+    size_t len = format_to_str_len(format, args);
+    char *buf = malloc(len);
+    format_to_str(buf, format, args);
+    va_end(args);
+    terminal_write(buf, strlen(buf));
+    free(buf);
+
+    return 0;
+}
+```
+**2. Helper function**
+- Helps to compute the length of types supported by the current `printf()`
+```C
+size_t format_to_str_len(const char* fmt, va_list args) {
+    va_list ap;
+    va_copy(ap, args); // copy
+    size_t L = 0;
+
+    for (; *fmt; fmt++) {
+        if (*fmt != '%') { L++; continue; }
+        fmt++; // consume %
+        if (*fmt == 's') {          // string
+            const char* s = va_arg(ap, char*);
+            L += strlen(s);
+        } else if (*fmt == 'd') {   // signed 32-bit
+            int v = va_arg(ap, int);
+            unsigned uv = v < 0? (0u - (unsigned)v) : (unsigned) v;
+            if (v < 0) L++; // '-'
+            do { L++; } while (uv /= 10u);
+        } else if (*fmt == 'c') {   // char
+            (void)va_arg(ap, int);
+            L += 1;
+        } else if (*fmt == 'x') {   // hex 32-bit
+            unsigned v = va_arg(ap, unsigned);
+            do { L++; } while (v >>= 4);
+        } else if (*fmt == 'u') {   // unsigned 32-bit
+            unsigned v = va_arg(ap, unsigned);
+            do { L++; } while (v /= 10u);
+        } else if (*fmt == 'p') {   // pointer: 0x + hex(ptr)
+            uintptr_t p = va_arg(ap, uintptr_t);
+            L += 2;                               // "0x"
+            do { ++L; } while (p >>= 4);
+        } else if (*fmt == 'l' && fmt[1]=='l' && fmt[2]=='u') {
+            unsigned long long v = va_arg(ap, unsigned long long);
+            do { ++L; } while (v /= 10ULL);
+            fmt += 2;
+        } else {
+            L += 2; // treat unknow type as %?
+        }
+        
+        va_end(ap);
+        return L + 1 + 1; // inclue '\n' + '\0'
+    }
+}
+```
+**3. Test with stdlib**
+- Use  `malloc()` and `free()` from `stdlib` to test
+- The `printf_da()` works correctly for provided test cases and longer string
+```C
+    printf_da("mix: %s %d %u %x %c %p %llu",
+                "ok", -42, 4294967295u, 0xBEEF, 'Z', (void*)msg, 1234567890123456789ULL);
+    // mix: ok -42 4294967295 beef Z 0x80002cf4 1234567890123456789
+
+    int len = 700;
+    char long_str[len + 1];
+    for (int i = 0; i < len; i++) { long_str[i] = 'A' + (i % 26);  };
+    long_str[len] = '\0';
+
+    size_t L = strlen(long_str);
+    printf_da("len = %u last = %c", (unsigned)L, long_str[L - 1]);
+    // len = 700 last = X
+```
+
+## Craft malloc() & free()
+**1. Understanding brk**
+- `brk` points to the end of the heap
+- Stack start is `0x80400000`, heap end is `0x80200000`
+- To ensure stack and heap never overlap, `brk` should not exceed `0x80200000`
+```C
+extern char __heap_start, __heap_end;
+static char* brk = &__heap_start;
+char* _sbrk(int size) {
+    if (brk + size > (char*)&__heap_end) {
+        terminal_write("_sbrk: heap grows too large\r\n", 29);
+        return NULL;
+    }
+
+    char* old_brk = brk;
+    brk += size;
+    return old_brk;
+}
+```
+
