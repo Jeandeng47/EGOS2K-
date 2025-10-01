@@ -156,6 +156,80 @@ size_t format_to_str_len(const char* fmt, va_list args) {
     }
 }
 
+#include <stddef.h>
+
+#define ALIGN         (sizeof(void*))         
+#define ALIGN_UP(x)   (((x) + (ALIGN-1)) & ~(ALIGN-1))
+
+typedef struct blk {
+    size_t size;        // size of payload
+    struct blk* next;   // pointer to next block
+    int free;           // whether the block is freed
+} blk_t;
+
+static blk_t* g_head = NULL; // track head of list
+
+extern char __heap_start, __heap_end;
+static char* brk = &__heap_start;
+char* _sbrk(int size) {
+    if (brk + size > (char*)&__heap_end) {
+        terminal_write("_sbrk: heap grows too large\r\n", 29);
+        return NULL;
+    }
+
+    char* old_brk = brk;
+    brk += size;
+    return old_brk;
+}
+
+static blk_t* request_memory(size_t need) {
+    size_t total = sizeof(blk_t) + need; // header + payload
+    blk_t* b = (blk_t*)_sbrk((int) total);
+    if (!b) return NULL;
+    b->size = need;
+    b->next = NULL;
+    b->free = 0;
+    return b;
+} 
+
+// Return the pointer to the newly-allocated memory region
+void* malloc_e(size_t sz) {
+    if (sz == 0) return NULL;
+    sz = ALIGN_UP(sz);
+    
+    // Find first-fit
+    for (blk_t* cur = g_head; cur; cur = cur->next) {
+        if (cur->free && cur->size >= sz) {
+            cur->free = 0;
+            return (void*)(cur + 1);
+        }
+    }
+
+    // If no fit, allocate
+    if (!g_head) { 
+        blk_t* b = request_memory(sz);
+        if (!b) return NULL;
+        g_head = b;
+        return (void*)(b + 1); // skip sizeof(blk_t), point to payload
+    } 
+
+    // Iterate the find the next block
+    blk_t* cur = g_head;
+    while (cur->next) { cur = cur->next; }
+    blk_t *b = request_memory(sz);
+    if (!b) return NULL;
+    cur->next = b;
+    return (void*)(b + 1);
+}
+
+// Free the memory region pointed by ptr
+void free_e(void* ptr) {
+    if(!ptr) return;
+    blk_t* b = ((blk_t*)ptr) - 1;
+    b->free = 1; // mark unsued
+}
+
+// Printf with dynamic allocation
 int printf_da(const char* format, ...) {
     va_list args;
     va_start(args, format);
@@ -170,22 +244,88 @@ int printf_da(const char* format, ...) {
     return 0;
 }
 
-
-// To ensure stack & heap not overlap, brk (end of heap)
-// should be lower than stack_start(0x80400000): *brk <= 0x80200000
-extern char __heap_start, __heap_end;
-static char* brk = &__heap_start;
-char* _sbrk(int size) {
-    if (brk + size > (char*)&__heap_end) {
-        terminal_write("_sbrk: heap grows too large\r\n", 29);
-        return NULL;
-    }
-
-    char* old_brk = brk;
-    brk += size;
-    return old_brk;
+// Test printf() and printf_da()
+static void test_printf(char* msg) {
+    printf("\n======= Test printf =======");
+    printf("%s-%d is awesome!", "egos", 2000);
+    printf("%c is character $", '$');
+    printf("%c is character 0", (char)48);
+    printf("%x is integer 1234 in hexadecimal", 1234);
+    printf("%u is the maximum of unsigned int", (unsigned int)0xFFFFFFFF);
+    printf("%p is the hexadecimal address of the hello-world string", msg);
+    printf("%llu is the maximum of unsigned long long", 0xFFFFFFFFFFFFFFFFULL);
 }
 
+static void test_printf_da(char* msg) {
+    printf("\n======= Test printf_da =======");
+    // mixed format
+    printf_da("mix: %s %d %u %x %c %p %llu",
+              "ok", -42, 4294967295u, 0xBEEF, 'Z', (void*)msg, 1234567890123456789ULL);
+
+    // longer string
+    int len = 700;
+    char long_str[len + 1];
+    for (int i = 0; i < len; i++) { long_str[i] = 'A' + (i % 26); }
+    long_str[len] = '\0';
+    size_t L = strlen(long_str);
+    printf_da("len = %u last = %c", (unsigned)L, long_str[L - 1]);
+}
+
+// Test malloc() & free()
+static int is_aligned(void* p) {
+    return ((uintptr_t)p % sizeof(void*)) == 0;
+}
+static void test_allocator() {
+    printf("\n======= Test allocator =======");
+    int total = 0, pass = 0;
+    
+    // 1) Basic alloc, free, re-use
+    total++;
+    void* a = malloc_e(100);
+    void* b = malloc_e(200);
+    if (a && b && a != b) {
+        free_e(a);
+        void* c = malloc_e(100);
+        if (c == a) { printf("PASS: basic reuse"); pass++; }
+        else        { printf("FAIL: basic reuse (c=%p a=%p)", c, a); }
+    } else {
+        printf("FAIL: basic alloc (a=%p b=%p)", a, b);
+    }
+
+    // 2) Test alignment
+    total++;
+    void *p1 = malloc_e(1);
+    void* p2 = malloc_e(3);
+    if (p1 && p2 && is_aligned(p1) && is_aligned(p2)) {
+        printf("PASS: alignment"); pass++;
+    } else {
+        printf("FAIL: alignment (p1=%p p2=%p)", p1, p2);
+    }
+
+    // 3) zero-size and free(NULL)
+    total++;
+    void* z = malloc_e(0);
+    free_e(NULL); // should be no-op
+    if (z == NULL) { printf("PASS: zero-size + free(NULL)"); pass++; }
+    else           { printf("FAIL: zero-size (got %p)", z); }
+
+    // 4) first-fit hole usage vs. larger request to tail
+    total++;
+    void* x = malloc_e(400);
+    void* y = malloc_e(400);
+    void* w = malloc_e(400);
+    if (x && y && w) {
+        free_e(y);                    // create a 400-sized hole
+        void* y2 = malloc_e(200);     // should land in y
+        void* big = malloc_e(500);    // should be new tail (not y)
+        if (y2 == y && big && big != y) { printf("PASS: first-fit behavior"); pass++; }
+        else { printf("FAIL: first-fit (y2=%p y=%p big=%p)", y2, y, big); }
+    } else {
+        printf("FAIL: setup for first-fit");
+    }
+
+    printf("Allocator tests: %d/%d passed\n", pass, total);
+}
 
 int main() {
     char* msg = "Hello, World!\n\r";
@@ -195,42 +335,12 @@ int main() {
      * when implementing formatted output
      */
 
-    
     // part 1. formatted output
-    printf("%s-%d is awesome!", "egos", 2000);
-    printf("%c is character $", '$');
-    printf("%c is character 0", (char)48);
-    printf("%x is integer 1234 in hexadecimal", 1234);
-    printf("%u is the maximum of unsigned int", (unsigned int)0xFFFFFFFF);
-    printf("%p is the hexadecimal address of the hello-world string", msg);
-    printf("%llu is the maximum of unsigned long long", 0xFFFFFFFFFFFFFFFFULL);
-
-    // Expected output:
-    // Hello, World!
-    // egos-2000 is awesome!
-    // $ is character $
-    // 0 is character 0
-    // 4d2 is integer 1234 in hexadecimal
-    // 4294967295 is the maximum of unsigned int
-    // 0x800029f8 is the hexadecimal address of the hello-world string
-    // 18446744073709551615 is the maximum of unsigned long long
+    test_printf(msg);
+    test_printf_da(msg);
 
     // part 2. dynamic memory allocation
-
-    // Mixed format
-    printf_da("mix: %s %d %u %x %c %p %llu",
-              "ok", -42, 4294967295u, 0xBEEF, 'Z', (void*)msg, 1234567890123456789ULL);
-
-    // Longer string
-    int len = 700;
-    char long_str[len + 1];
-    for (int i = 0; i < len; i++) { long_str[i] = 'A' + (i % 26);  };
-    long_str[len] = '\0';
-    // printf_da("%s ", long_str);
-
-    size_t L = strlen(long_str);
-    printf_da("len = %u last = %c", (unsigned)L, long_str[L - 1]); // expect len=700, last=x
-
+    test_allocator();
     return 0;
 }
 
