@@ -98,8 +98,8 @@ void format_to_str(char* out, const char* fmt, va_list args) {
 
 int printf(const char* format, ...) {
     char buf[512];
-    va_list args;
-    va_start(args, format);
+    va_list args; // pointer pointing to the next param
+    va_start(args, format); // start fetching params from format
     format_to_str(buf, format, args);
     va_end(args);
     terminal_write(buf, strlen(buf));

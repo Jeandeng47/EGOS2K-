@@ -401,23 +401,3 @@ size_t format_to_str_len(const char* fmt, va_list args) {
     // len = 700 last = X
 ```
 
-## Craft malloc() & free()
-**1. Understanding brk**
-- `brk` points to the end of the heap
-- Stack start is `0x80400000`, heap end is `0x80200000`
-- To ensure stack and heap never overlap, `brk` should not exceed `0x80200000`
-```C
-extern char __heap_start, __heap_end;
-static char* brk = &__heap_start;
-char* _sbrk(int size) {
-    if (brk + size > (char*)&__heap_end) {
-        terminal_write("_sbrk: heap grows too large\r\n", 29);
-        return NULL;
-    }
-
-    char* old_brk = brk;
-    brk += size;
-    return old_brk;
-}
-```
-
