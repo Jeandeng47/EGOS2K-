@@ -70,7 +70,7 @@ void format_to_str(char* out, const char* fmt, va_list args) {
             } else if (*fmt == 'l' && fmt[1] == 'l' && fmt[2] == 'u') {
                 unsigned long long v = va_arg(args, unsigned long long);
 
-                char temp[20 + 1]; // 20 bits(2^64-1) + '\0'
+                char temp[20 + 1]; // 20 digits(2^64-1) + '\0'
                 int n = 0;
                 do {
                     unsigned d = v % 10ULL;
@@ -91,7 +91,7 @@ void format_to_str(char* out, const char* fmt, va_list args) {
     }
     // always append a new line
     size_t len = strlen(out);
-    if (len == 0 || out[len - 1]) {
+    if (len == 0 || out[len - 1] != '\n') {
         strncat(out, "\n", 1);
     }
 }
@@ -150,10 +150,9 @@ size_t format_to_str_len(const char* fmt, va_list args) {
         } else {
             L += 2; // treat unknow type as %?
         }
-        
-        va_end(ap);
-        return L + 1 + 1; // inclue '\n' + '\0'
     }
+    va_end(ap);
+    return L + 1 + 1; // inclue '\n' + '\0'
 }
 
 #include <stddef.h>
